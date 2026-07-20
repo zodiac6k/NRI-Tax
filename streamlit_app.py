@@ -1,15 +1,9 @@
 # streamlit_app.py
 # NRI ITR Wizard — FY 2025-26 (AY 2026-27) — OLD REGIME (+ New Regime quick check)
 # Guides NRI (Middle East) through rent, interest, capital gains, and credits,
-# shows refund/payable, a quick Old-vs-New regime comparison, and lets the user
-# email the summary/Excel report to themselves or their CA.
+# shows refund/payable, a quick Old-vs-New regime comparison, and an Excel download.
 
 import datetime as dt
-import smtplib
-from email.mime.multipart import MIMEMultipart
-from email.mime.base import MIMEBase
-from email.mime.text import MIMEText
-from email import encoders
 from typing import Dict, Any, Tuple
 from io import BytesIO
 
@@ -27,7 +21,7 @@ STEPS = [
     "5) Other Income & Deductions",
     "6) Tax Credits",
     "7) Regime Comparison",
-    "8) Summary, Download & Email",
+    "8) Summary & Download",
 ]
 
 st.set_page_config(page_title="NRI ITR Wizard · FY 2025-26", page_icon="📑", layout="wide")
@@ -173,29 +167,6 @@ def apply_surcharge_with_caps(tax_slab: float,
         "surcharge_total": total,
     }
 
-def send_email_with_attachment(smtp_host: str, smtp_port: int, sender_email: str,
-                                app_password: str, recipient_email: str, subject: str,
-                                body: str, attachment_bytes: bytes, attachment_name: str) -> Tuple[bool, str]:
-    try:
-        msg = MIMEMultipart()
-        msg["From"] = sender_email
-        msg["To"] = recipient_email
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body, "plain"))
-
-        part = MIMEBase("application", "octet-stream")
-        part.set_payload(attachment_bytes)
-        encoders.encode_base64(part)
-        part.add_header("Content-Disposition", f"attachment; filename={attachment_name}")
-        msg.attach(part)
-
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.starttls()
-            server.login(sender_email, app_password)
-            server.sendmail(sender_email, recipient_email, msg.as_string())
-        return True, "Email sent successfully."
-    except Exception as e:
-        return False, f"Email failed: {e}"
 
 # ---------- Header banner ----------
 st.markdown(f"""
@@ -506,9 +477,9 @@ if step.startswith("7"):
 
     st.warning("⚠️ This is a simplified comparison for direction-setting only — it does not re-derive every deduction/exemption difference (e.g., standard deduction on salary, HRA). Confirm with a CA before choosing a regime, especially near ITR filing deadline.")
 
-# ---------- Step 8: Summary, Download & Email ----------
+# ---------- Step 8: Summary & Download ----------
 if step.startswith("8"):
-    st.header("8) Summary, Download & Email")
+    st.header("8) Summary & Download")
     summary = compute_summary(X)
 
     # Key metrics
@@ -599,55 +570,15 @@ if step.startswith("8"):
     data = output.getvalue()
     excel_filename = "nri_itr_summary_fy2025_26.xlsx"
 
+    st.markdown("---")
+    st.subheader("⬇️ Download your report")
+    st.caption("Your full computation is saved as a multi-sheet Excel workbook — summary, house property, interest, capital gains, and the computation trail.")
     st.download_button(
         "⬇️ Download Excel (FY 2025-26)",
         data=data,
         file_name=excel_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
-
-    # ---------- Email the report ----------
-    st.markdown("---")
-    st.subheader("📧 Get this report by email")
-
-    gmail_sender = st.secrets.get("gmail_sender", None) if hasattr(st, "secrets") else None
-    gmail_app_password = st.secrets.get("gmail_app_password", None) if hasattr(st, "secrets") else None
-    sender_configured = bool(gmail_sender and gmail_app_password)
-
-    if not sender_configured:
-        st.info(
-            "📮 Email sending isn't configured yet. The app owner needs to add `gmail_sender` and "
-            "`gmail_app_password` to `.streamlit/secrets.toml` (or the Streamlit Cloud Secrets manager) "
-            "— generate the App Password at myaccount.google.com/apppasswords with 2FA enabled."
-        )
-
-    ecol1, ecol2 = st.columns([3, 1])
-    with ecol1:
-        user_email = st.text_input("Your email address", key="user_email", placeholder="you@example.com")
-    with ecol2:
-        st.write("")  # vertical spacer to align button with input
-        send_clicked = st.button("Send me the report", key="send_email_btn", disabled=not sender_configured)
-
-    if send_clicked:
-        if not user_email or "@" not in user_email:
-            st.error("Please enter a valid email address.")
-        else:
-            subject = f"Your NRI ITR Summary — {FY_LABEL} ({AY_LABEL})"
-            body = (
-                f"Hi,\n\nPlease find attached your NRI ITR estimate for {FY_LABEL} ({AY_LABEL}).\n"
-                f"Total tax liability: {inr(total_tax)}\n"
-                f"{'Amount payable' if net >= 0 else 'Estimated refund'}: {inr(abs(net))}\n\n"
-                f"This is an educational estimate — please cross-check before filing.\n\nRegards"
-            )
-            with st.spinner("Sending your report..."):
-                ok, msg = send_email_with_attachment(
-                    "smtp.gmail.com", 587, gmail_sender, gmail_app_password,
-                    user_email, subject, body, data, excel_filename
-                )
-            if ok:
-                st.success(f"✅ Sent! Check {user_email} for your report.")
-            else:
-                st.error(f"❌ {msg}")
 
 st.sidebar.markdown("---")
 st.sidebar.caption("This tool assumes **Old Regime** (Income-tax Act, 1961 — still governs FY 2025-26), applies 80TTA on NRO savings, equity CG at flat 111A/112A rates (20% / 12.5%, ₹1.25L exemption), and surcharge caps on special-rate gains. Health & Education Cess at 4%. Section 87A rebate not applied (NRIs are not eligible).")
