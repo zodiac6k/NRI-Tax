@@ -1,8 +1,15 @@
 # streamlit_app.py
-# NRI ITR Wizard — FY 2025-26 (AY 2026-27) — OLD REGIME
-# Guides NRI (Middle East) through rent, interest, capital gains, and credits, then shows refund/payable.
+# NRI ITR Wizard — FY 2025-26 (AY 2026-27) — OLD REGIME (+ New Regime quick check)
+# Guides NRI (Middle East) through rent, interest, capital gains, and credits,
+# shows refund/payable, a quick Old-vs-New regime comparison, and lets the user
+# email the summary/Excel report to themselves or their CA.
 
 import datetime as dt
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email.mime.text import MIMEText
+from email import encoders
 from typing import Dict, Any, Tuple
 from io import BytesIO
 
@@ -12,7 +19,96 @@ import pandas as pd
 FY_LABEL = "FY 2025-26"
 AY_LABEL = "AY 2026-27"
 
-st.set_page_config(page_title="NRI ITR Wizard (FY 2025-26)", page_icon="📑", layout="wide")
+STEPS = [
+    "1) Profile & Notes",
+    "2) House Property (Rent)",
+    "3) Interest",
+    "4) Capital Gains",
+    "5) Other Income & Deductions",
+    "6) Tax Credits",
+    "7) Regime Comparison",
+    "8) Summary, Download & Email",
+]
+
+st.set_page_config(page_title="NRI ITR Wizard · FY 2025-26", page_icon="📑", layout="wide")
+
+# ---------- Styling ----------
+def inject_css():
+    st.markdown("""
+    <style>
+        :root {
+            --navy: #0B2B4C;
+            --navy-light: #123A63;
+            --gold: #C9A227;
+            --bg: #F6F7F9;
+        }
+        .stApp { background-color: var(--bg); }
+
+        /* Header banner */
+        .nri-header {
+            background: linear-gradient(120deg, var(--navy) 0%, var(--navy-light) 100%);
+            padding: 22px 28px;
+            border-radius: 14px;
+            color: #FFFFFF;
+            margin-bottom: 18px;
+            box-shadow: 0 4px 14px rgba(11,43,76,0.20);
+        }
+        .nri-header h1 { margin: 0; font-size: 1.55rem; font-weight: 700; }
+        .nri-header p { margin: 6px 0 0 0; font-size: 0.92rem; color: #D8E1EC; }
+        .nri-header .badge {
+            display: inline-block; background: var(--gold); color: #1A1A1A;
+            padding: 2px 10px; border-radius: 999px; font-size: 0.75rem;
+            font-weight: 700; margin-right: 8px;
+        }
+
+        /* Metric cards */
+        div[data-testid="stMetric"] {
+            background: #FFFFFF;
+            border: 1px solid #E4E8EE;
+            border-left: 4px solid var(--gold);
+            border-radius: 10px;
+            padding: 14px 16px 10px 16px;
+            box-shadow: 0 1px 4px rgba(16,24,40,0.05);
+        }
+        div[data-testid="stMetricLabel"] { font-weight: 600; color: #4A5568; }
+
+        /* Sidebar */
+        section[data-testid="stSidebar"] {
+            background-color: var(--navy);
+        }
+        section[data-testid="stSidebar"] * { color: #EDF1F7 !important; }
+        section[data-testid="stSidebar"] .stRadio label span {
+            font-size: 0.92rem;
+        }
+        section[data-testid="stSidebar"] div[role="radiogroup"] > label {
+            background: rgba(255,255,255,0.05);
+            border-radius: 8px;
+            padding: 6px 8px;
+            margin-bottom: 4px;
+        }
+
+        /* Buttons */
+        .stButton>button, .stDownloadButton>button {
+            background-color: var(--navy);
+            color: white;
+            border-radius: 8px;
+            border: none;
+            font-weight: 600;
+        }
+        .stButton>button:hover, .stDownloadButton>button:hover {
+            background-color: var(--gold);
+            color: #1A1A1A;
+        }
+
+        /* Section headers */
+        h1, h2, h3 { color: var(--navy); }
+
+        .verdict-pay { color: #B42318; font-weight: 700; }
+        .verdict-refund { color: #067647; font-weight: 700; }
+    </style>
+    """, unsafe_allow_html=True)
+
+inject_css()
 
 # ---------- Helpers ----------
 def inr(x: float) -> str:
@@ -28,20 +124,40 @@ def old_regime_basic_tax_slab(ti: float) -> float:
         return 12500 + 0.20 * (ti - 500000)
     return 112500 + 0.30 * (ti - 1000000)
 
-def surcharge_rate(total_income: float) -> float:
-    # 0 up to 50L; 10% (50L–1Cr); 15% (1–2Cr); 25% (2–5Cr); 37% (>5Cr)
+def new_regime_basic_tax_slab(ti: float) -> float:
+    # New regime FY 2025-26 (Budget 2025): 0-4L Nil; 4-8L 5%; 8-12L 10%;
+    # 12-16L 15%; 16-20L 20%; 20-24L 25%; >24L 30%.
+    # NOTE: Section 87A rebate (nil tax up to ~12L for residents) does NOT apply to NRIs.
+    if ti <= 400000:
+        return 0.0
+    if ti <= 800000:
+        return 0.05 * (ti - 400000)
+    if ti <= 1200000:
+        return 20000 + 0.10 * (ti - 800000)
+    if ti <= 1600000:
+        return 60000 + 0.15 * (ti - 1200000)
+    if ti <= 2000000:
+        return 120000 + 0.20 * (ti - 1600000)
+    if ti <= 2400000:
+        return 200000 + 0.25 * (ti - 2000000)
+    return 300000 + 0.30 * (ti - 2400000)
+
+def surcharge_rate(total_income: float, regime: str = "old") -> float:
+    # 0 up to 50L; 10% (50L–1Cr); 15% (1–2Cr); 25% (2–5Cr); 37% (>5Cr, OLD REGIME ONLY)
+    # New regime: the 37% band was removed (Budget 2023) — surcharge caps at 25%.
     if total_income <= 5_000_000: return 0.0
     if total_income <= 10_000_000: return 0.10
     if total_income <= 20_000_000: return 0.15
     if total_income <= 50_000_000: return 0.25
-    return 0.37
+    return 0.25 if regime == "new" else 0.37
 
 def apply_surcharge_with_caps(tax_slab: float,
                               tax_111A: float,
                               tax_112A: float,
                               tax_112: float,
-                              total_income: float) -> Tuple[float, Dict[str, float]]:
-    sr = surcharge_rate(total_income)
+                              total_income: float,
+                              regime: str = "old") -> Tuple[float, Dict[str, float]]:
+    sr = surcharge_rate(total_income, regime)
     surcharge_slab = tax_slab * sr
     capped_sr = min(sr, 0.15)  # cap at 15% for 111A/112/112A
     surcharge_111A = tax_111A * capped_sr
@@ -57,23 +173,51 @@ def apply_surcharge_with_caps(tax_slab: float,
         "surcharge_total": total,
     }
 
+def send_email_with_attachment(smtp_host: str, smtp_port: int, sender_email: str,
+                                app_password: str, recipient_email: str, subject: str,
+                                body: str, attachment_bytes: bytes, attachment_name: str) -> Tuple[bool, str]:
+    try:
+        msg = MIMEMultipart()
+        msg["From"] = sender_email
+        msg["To"] = recipient_email
+        msg["Subject"] = subject
+        msg.attach(MIMEText(body, "plain"))
+
+        part = MIMEBase("application", "octet-stream")
+        part.set_payload(attachment_bytes)
+        encoders.encode_base64(part)
+        part.add_header("Content-Disposition", f"attachment; filename={attachment_name}")
+        msg.attach(part)
+
+        with smtplib.SMTP(smtp_host, smtp_port) as server:
+            server.starttls()
+            server.login(sender_email, app_password)
+            server.sendmail(sender_email, recipient_email, msg.as_string())
+        return True, "Email sent successfully."
+    except Exception as e:
+        return False, f"Email failed: {e}"
+
+# ---------- Header banner ----------
+st.markdown(f"""
+<div class="nri-header">
+    <span class="badge">{FY_LABEL}</span><span class="badge">{AY_LABEL}</span><span class="badge">Old Regime</span>
+    <h1>📑 NRI ITR Wizard</h1>
+    <p>Estimate Indian income tax for NRIs (Middle East) — house property, interest, capital gains, credits, and a quick Old-vs-New regime check.</p>
+</div>
+""", unsafe_allow_html=True)
+
 # ---------- Sidebar navigation ----------
-st.sidebar.title("NRI ITR Wizard")
-st.sidebar.markdown(f"**{FY_LABEL} / {AY_LABEL}** · Old Regime")
+st.sidebar.title("🧭 Navigation")
+st.sidebar.markdown(f"**{FY_LABEL} / {AY_LABEL}**")
 step = st.sidebar.radio(
     "Steps",
-    [
-        "1) Profile & Notes",
-        "2) House Property (Rent)",
-        "3) Interest",
-        "4) Capital Gains",
-        "5) Other Income & Deductions",
-        "6) Tax Credits",
-        "7) Summary & Download",
-    ],
+    STEPS,
     index=0,
     help="Move through each section and fill values; your results update at the end."
 )
+step_idx = STEPS.index(step) + 1
+st.sidebar.progress(step_idx / len(STEPS))
+st.sidebar.caption(f"Step {step_idx} of {len(STEPS)}")
 
 # ---------- Input state containers ----------
 if "inputs" not in st.session_state:
@@ -107,12 +251,12 @@ if step.startswith("1"):
     col1, col2 = st.columns([2,1])
     with col1:
         st.markdown("""
-- This tool estimates **Indian income tax for an NRI** under the **Old Regime** for **FY 2025-26 (AY 2026-27)**.
+- This tool estimates **Indian income tax for an NRI** under the **Old Regime** for **FY 2025-26 (AY 2026-27)**, with a quick **New Regime comparison** (Step 7).
 - It prompts for **house property (rent)**, **interest** (NRO/NRE), **capital gains**, and **tax credits (TDS/Advance tax)**.
 - **80TTA** on NRO **savings** interest up to ₹10,000 is auto-applied. **NRE/FCNR interest** is treated **exempt** in India.
 - **Equity capital gains**: STCG (111A) at a flat **20%**, LTCG (112A) at a flat **12.5%** with a **₹1,25,000** annual exemption — the entire FY 2025-26 falls after the 23-Jul-2024 rate change, so no date-wise split is needed this year.
-- **Surcharge** bands + **4% cess** applied; surcharge on **111A/112/112A** capped at **15%**.
-- **Section 87A rebate does NOT apply to NRIs** (resident-only relief) — not applied anywhere in this tool.
+- **Surcharge** bands + **4% cess** applied; surcharge on **111A/112/112A** capped at **15%**. New regime additionally caps overall surcharge at **25%** (no 37% band).
+- **Section 87A rebate does NOT apply to NRIs** (resident-only relief) — not applied anywhere in this tool, under either regime.
 - Old Regime slab rates and surcharge bands are **unchanged from FY 2024-25** — no Budget 2025/2026 change affects them.
 - Governing law for this filing is still the **Income-tax Act, 1961**. The new **Income-tax Act, 2025** (and Income-tax Rules, 2026) applies only from **FY 2026-27 (AY 2027-28)** onward.
 - **Due dates:** 31-Jul-2026 (ITR-1/ITR-2, no audit); 31-Aug-2026 (ITR-3/ITR-4, no audit).
@@ -120,7 +264,8 @@ if step.startswith("1"):
 > **Disclaimer:** Educational estimator only. For complex cases (marginal relief, DTAA, multiple properties, indexing nuances), please consult a CA.
         """)
     with col2:
-        st.info("Tip: Enter **0** where not applicable.\nYou can revisit steps any time.")
+        st.info("💡 Enter **0** where not applicable.\nYou can revisit steps any time — your inputs are kept in session.")
+        st.warning("⚠️ Since NRIs get **no 87A rebate**, the New Regime's headline 'nil up to ₹12L' does **not** apply to you — see Step 7.")
 
 # ---------- Step 2: House Property ----------
 if step.startswith("2"):
@@ -187,6 +332,7 @@ if step.startswith("5"):
     st.header("5) Other Income & Deductions")
     X["other_slab_income"] = max(0.0, float(st.number_input("Any OTHER slab-taxed income (e.g., salary/consulting in India) (₹)", value=float(X["other_slab_income"]), step=1000.0)))
     X["other_deductions"] = max(0.0, float(st.number_input("Total other deductions (80C/80D/80G etc.) **EXCLUDING 80TTA** (₹)", value=float(X["other_deductions"]), step=1000.0)))
+    st.caption("Note: Chapter VIA deductions (80C/80D/80G etc.) are available under the **Old Regime only**. The New Regime comparison in Step 7 ignores this input, consistent with law.")
 
 # ---------- Step 6: Tax Credits ----------
 if step.startswith("6"):
@@ -245,7 +391,7 @@ def compute_summary(X: Dict[str, float]) -> Dict[str, Any]:
     total_income += X["other_slab_income"]
     total_income = max(0.0, total_income - X["other_deductions"])
 
-    surcharge, surcharge_break = apply_surcharge_with_caps(tax_on_slab, tax_111A, tax_112A, tax_112, total_income)
+    surcharge, surcharge_break = apply_surcharge_with_caps(tax_on_slab, tax_111A, tax_112A, tax_112, total_income, regime="old")
     tax_before_cess = tax_on_slab + tax_111A + tax_112A + tax_112 + surcharge
     cess = 0.04 * tax_before_cess
     total_tax = tax_before_cess + cess
@@ -294,12 +440,75 @@ def compute_summary(X: Dict[str, float]) -> Dict[str, Any]:
         "cess_4pct": cess,
         "total_tax_liability": total_tax,
         "credits": {"tds_tcs": X["tds_total"], "advance_tax": X["advance_tax"]},
-        "net_payable_positive_else_refund_negative": net_payable
+        "net_payable_positive_else_refund_negative": net_payable,
+        "_internal": {
+            "tax_111A": tax_111A, "tax_112A": tax_112A, "tax_112": tax_112,
+            "slab_income_components": slab_income_components,
+        }
     }
 
-# ---------- Step 7: Summary ----------
+def compute_new_regime_estimate(X: Dict[str, float], internals: Dict[str, float]) -> Dict[str, float]:
+    """Approximate New Regime tax for comparison: same special-rate CG taxes (111A/112A/112
+    are unchanged across regimes), but slab income taxed on New Regime slabs WITHOUT
+    Chapter VIA deductions (not allowed under New Regime), and surcharge capped at 25%
+    (no 37% band). No 87A rebate for NRIs under either regime."""
+    slab_income = internals["slab_income_components"]  # before other_deductions, as New Regime disallows them
+    tax_on_slab_new = new_regime_basic_tax_slab(max(0.0, slab_income))
+
+    tax_111A = internals["tax_111A"]
+    tax_112A = internals["tax_112A"]
+    tax_112 = internals["tax_112"]
+
+    total_income_new = max(0.0, slab_income) + X["stcg_eq"] + X["ltcg_eq"] + X["ltcg_20"] + X["ltcg_10"]
+
+    surcharge, _ = apply_surcharge_with_caps(tax_on_slab_new, tax_111A, tax_112A, tax_112, total_income_new, regime="new")
+    tax_before_cess = tax_on_slab_new + tax_111A + tax_112A + tax_112 + surcharge
+    cess = 0.04 * tax_before_cess
+    total_tax_new = tax_before_cess + cess
+
+    return {
+        "tax_on_slab_new": tax_on_slab_new,
+        "surcharge_new": surcharge,
+        "cess_new": cess,
+        "total_tax_new": total_tax_new,
+    }
+
+# ---------- Step 7: Regime Comparison ----------
 if step.startswith("7"):
-    st.header("7) Summary, Table & Excel Download")
+    st.header("7) Regime Comparison (Quick Check)")
+    st.caption("Approximate side-by-side using your inputs so far. Capital gains rates (111A/112A/112) are identical under both regimes; the difference is in slab tax, deduction eligibility, and surcharge cap.")
+
+    summary = compute_summary(X)
+    new_est = compute_new_regime_estimate(X, summary["_internal"])
+
+    old_total = summary["total_tax_liability"]
+    new_total = new_est["total_tax_new"]
+    diff = old_total - new_total
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Old Regime — Total Tax", inr(old_total))
+    col2.metric("New Regime — Total Tax (est.)", inr(new_total))
+    if diff > 0:
+        col3.metric("New Regime saves you", inr(diff))
+    elif diff < 0:
+        col3.metric("Old Regime saves you", inr(abs(diff)))
+    else:
+        col3.metric("Difference", inr(0.0))
+
+    st.markdown("#### Why they differ")
+    diff_table = pd.DataFrame([
+        {"Item": "Slab tax on non-CG income", "Old Regime": inr(summary["tax_on_slab_income"]), "New Regime": inr(new_est["tax_on_slab_new"])},
+        {"Item": "Chapter VIA deductions (80C/80D etc.)", "Old Regime": inr(X["other_deductions"]), "New Regime": inr(0.0) + " (not allowed)"},
+        {"Item": "Surcharge (highest band)", "Old Regime": "up to 37%", "New Regime": "capped at 25%"},
+        {"Item": "Section 87A rebate (NRI)", "Old Regime": "Not applicable", "New Regime": "Not applicable"},
+    ])
+    st.table(diff_table)
+
+    st.warning("⚠️ This is a simplified comparison for direction-setting only — it does not re-derive every deduction/exemption difference (e.g., standard deduction on salary, HRA). Confirm with a CA before choosing a regime, especially near ITR filing deadline.")
+
+# ---------- Step 8: Summary, Download & Email ----------
+if step.startswith("8"):
+    st.header("8) Summary, Download & Email")
     summary = compute_summary(X)
 
     # Key metrics
@@ -313,6 +522,11 @@ if step.startswith("7"):
     col2.metric("Taxes Already Paid (TDS+Advance)", inr(tds + adv))
     col3.metric("Amount Payable" if net >= 0 else "Estimated Refund", inr(abs(net)))
 
+    if net >= 0:
+        st.markdown(f"<p class='verdict-pay'>⚠️ Estimated amount payable: {inr(net)}. Consider paying Self-Assessment Tax before filing to avoid interest under Sec 234A/B/C.</p>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<p class='verdict-refund'>✅ Estimated refund: {inr(abs(net))}.</p>", unsafe_allow_html=True)
+
     # Compact on-screen table
     st.markdown("#### Compact Summary")
     simple = {
@@ -325,8 +539,8 @@ if step.startswith("7"):
     st.table(df_simple.assign(**{"Amount (₹)": df_simple["Amount (₹)"].map(inr)}))
 
     # Detailed JSON (as reference)
-    st.markdown("#### Detailed JSON (full)")
-    st.json(summary)
+    with st.expander("🔍 Detailed JSON (full computation trail)"):
+        st.json({k: v for k, v in summary.items() if k != "_internal"})
 
     # Build Excel with multiple sheets
     output = BytesIO()
@@ -383,12 +597,57 @@ if step.startswith("7"):
             ws.set_column("B:B", 24)
 
     data = output.getvalue()
+    excel_filename = "nri_itr_summary_fy2025_26.xlsx"
+
     st.download_button(
         "⬇️ Download Excel (FY 2025-26)",
         data=data,
-        file_name="nri_itr_summary_fy2025_26.xlsx",
+        file_name=excel_filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+    # ---------- Email the report ----------
+    st.markdown("---")
+    st.subheader("📧 Get this report by email")
+
+    gmail_sender = st.secrets.get("gmail_sender", None) if hasattr(st, "secrets") else None
+    gmail_app_password = st.secrets.get("gmail_app_password", None) if hasattr(st, "secrets") else None
+    sender_configured = bool(gmail_sender and gmail_app_password)
+
+    if not sender_configured:
+        st.info(
+            "📮 Email sending isn't configured yet. The app owner needs to add `gmail_sender` and "
+            "`gmail_app_password` to `.streamlit/secrets.toml` (or the Streamlit Cloud Secrets manager) "
+            "— generate the App Password at myaccount.google.com/apppasswords with 2FA enabled."
+        )
+
+    ecol1, ecol2 = st.columns([3, 1])
+    with ecol1:
+        user_email = st.text_input("Your email address", key="user_email", placeholder="you@example.com")
+    with ecol2:
+        st.write("")  # vertical spacer to align button with input
+        send_clicked = st.button("Send me the report", key="send_email_btn", disabled=not sender_configured)
+
+    if send_clicked:
+        if not user_email or "@" not in user_email:
+            st.error("Please enter a valid email address.")
+        else:
+            subject = f"Your NRI ITR Summary — {FY_LABEL} ({AY_LABEL})"
+            body = (
+                f"Hi,\n\nPlease find attached your NRI ITR estimate for {FY_LABEL} ({AY_LABEL}).\n"
+                f"Total tax liability: {inr(total_tax)}\n"
+                f"{'Amount payable' if net >= 0 else 'Estimated refund'}: {inr(abs(net))}\n\n"
+                f"This is an educational estimate — please cross-check before filing.\n\nRegards"
+            )
+            with st.spinner("Sending your report..."):
+                ok, msg = send_email_with_attachment(
+                    "smtp.gmail.com", 587, gmail_sender, gmail_app_password,
+                    user_email, subject, body, data, excel_filename
+                )
+            if ok:
+                st.success(f"✅ Sent! Check {user_email} for your report.")
+            else:
+                st.error(f"❌ {msg}")
 
 st.sidebar.markdown("---")
 st.sidebar.caption("This tool assumes **Old Regime** (Income-tax Act, 1961 — still governs FY 2025-26), applies 80TTA on NRO savings, equity CG at flat 111A/112A rates (20% / 12.5%, ₹1.25L exemption), and surcharge caps on special-rate gains. Health & Education Cess at 4%. Section 87A rebate not applied (NRIs are not eligible).")
