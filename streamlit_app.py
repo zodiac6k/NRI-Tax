@@ -1,5 +1,5 @@
 # streamlit_app.py
-# NRI ITR Wizard — FY 2024-25 (AY 2025-26) — OLD REGIME
+# NRI ITR Wizard — FY 2025-26 (AY 2026-27) — OLD REGIME
 # Guides NRI (Middle East) through rent, interest, capital gains, and credits, then shows refund/payable.
 
 import datetime as dt
@@ -9,10 +9,10 @@ from io import BytesIO
 import streamlit as st
 import pandas as pd
 
-FY_LABEL = "FY 2024-25"
-AY_LABEL = "AY 2025-26"
+FY_LABEL = "FY 2025-26"
+AY_LABEL = "AY 2026-27"
 
-st.set_page_config(page_title="NRI ITR Wizard (FY 2024-25)", page_icon="📑", layout="wide")
+st.set_page_config(page_title="NRI ITR Wizard (FY 2025-26)", page_icon="📑", layout="wide")
 
 # ---------- Helpers ----------
 def inr(x: float) -> str:
@@ -86,10 +86,8 @@ if "inputs" not in st.session_state:
         "nro_term_interest": 0.0,
         "nre_interest": 0.0,
 
-        "stcg_eq_pre": 0.0,     # before 23-Jul-2024 @15%
-        "stcg_eq_post": 0.0,    # on/after 23-Jul-2024 @20%
-        "ltcg_eq_pre": 0.0,     # before 23-Jul-2024 @10% (112A)
-        "ltcg_eq_post": 0.0,    # on/after 23-Jul-2024 @12.5% (112A)
+        "stcg_eq": 0.0,         # listed equity/Equity MF STCG (111A) @20%
+        "ltcg_eq": 0.0,         # listed equity/Equity MF LTCG (112A) @12.5%, 1.25L exemption
         "stcg_other_slab": 0.0, # slab-taxed STCG (e.g., property <24m)
         "ltcg_20": 0.0,         # other LTCG @20% (112)
         "ltcg_10": 0.0,         # other LTCG @10% (112)
@@ -109,11 +107,15 @@ if step.startswith("1"):
     col1, col2 = st.columns([2,1])
     with col1:
         st.markdown("""
-- This tool estimates **Indian income tax for an NRI** under the **Old Regime** for **FY 2024-25 (AY 2025-26)**.
+- This tool estimates **Indian income tax for an NRI** under the **Old Regime** for **FY 2025-26 (AY 2026-27)**.
 - It prompts for **house property (rent)**, **interest** (NRO/NRE), **capital gains**, and **tax credits (TDS/Advance tax)**.
 - **80TTA** on NRO **savings** interest up to ₹10,000 is auto-applied. **NRE/FCNR interest** is treated **exempt** in India.
-- **Equity CG changes from 23-Jul-2024** handled via date-wise inputs.
+- **Equity capital gains**: STCG (111A) at a flat **20%**, LTCG (112A) at a flat **12.5%** with a **₹1,25,000** annual exemption — the entire FY 2025-26 falls after the 23-Jul-2024 rate change, so no date-wise split is needed this year.
 - **Surcharge** bands + **4% cess** applied; surcharge on **111A/112/112A** capped at **15%**.
+- **Section 87A rebate does NOT apply to NRIs** (resident-only relief) — not applied anywhere in this tool.
+- Old Regime slab rates and surcharge bands are **unchanged from FY 2024-25** — no Budget 2025/2026 change affects them.
+- Governing law for this filing is still the **Income-tax Act, 1961**. The new **Income-tax Act, 2025** (and Income-tax Rules, 2026) applies only from **FY 2026-27 (AY 2027-28)** onward.
+- **Due dates:** 31-Jul-2026 (ITR-1/ITR-2, no audit); 31-Aug-2026 (ITR-3/ITR-4, no audit).
 
 > **Disclaimer:** Educational estimator only. For complex cases (marginal relief, DTAA, multiple properties, indexing nuances), please consult a CA.
         """)
@@ -160,11 +162,9 @@ if step.startswith("3"):
 # ---------- Step 4: Capital Gains ----------
 if step.startswith("4"):
     st.header("4) Capital Gains")
-    st.markdown("**Equity/STT-paid** (enter gains separated by sale date):")
-    X["stcg_eq_pre"]  = max(0.0, float(st.number_input("STCG on listed equity/Equity MF (sale **before 23-Jul-2024**) (₹)", value=float(X["stcg_eq_pre"]), step=1000.0)))
-    X["stcg_eq_post"] = max(0.0, float(st.number_input("STCG on listed equity/Equity MF (sale **on/after 23-Jul-2024**) (₹)", value=float(X["stcg_eq_post"]), step=1000.0)))
-    X["ltcg_eq_pre"]  = max(0.0, float(st.number_input("LTCG on listed equity/Equity MF (sale **before 23-Jul-2024**) (₹)", value=float(X["ltcg_eq_pre"]), step=1000.0)))
-    X["ltcg_eq_post"] = max(0.0, float(st.number_input("LTCG on listed equity/Equity MF (sale **on/after 23-Jul-2024**) (₹)", value=float(X["ltcg_eq_post"]), step=1000.0)))
+    st.markdown("**Equity/STT-paid** (listed equity & equity MF, FY 2025-26 rates apply uniformly — no date split needed):")
+    X["stcg_eq"] = max(0.0, float(st.number_input("STCG on listed equity/Equity MF — Sec 111A @20% (₹)", value=float(X["stcg_eq"]), step=1000.0)))
+    X["ltcg_eq"] = max(0.0, float(st.number_input("LTCG on listed equity/Equity MF — Sec 112A @12.5% (₹)", value=float(X["ltcg_eq"]), step=1000.0)))
 
     st.markdown("**Other capital gains:**")
     X["stcg_other_slab"] = max(0.0, float(st.number_input("Other STCG taxed at **slab** (₹)", value=float(X["stcg_other_slab"]), step=1000.0)))
@@ -172,20 +172,15 @@ if step.startswith("4"):
     X["ltcg_10"] = max(0.0, float(st.number_input("Other LTCG **@10%** (₹)", value=float(X["ltcg_10"]), step=1000.0)))
 
     # Compute preview taxes for display
-    tax_stcg_eq_pre = 0.15 * X["stcg_eq_pre"]
-    tax_stcg_eq_post = 0.20 * X["stcg_eq_post"]
-    total_ltcg_eq = X["ltcg_eq_pre"] + X["ltcg_eq_post"]
-    exemption = min(125000.0, total_ltcg_eq)
-    post_taxable = max(0.0, X["ltcg_eq_post"] - exemption)
-    rem = max(0.0, exemption - X["ltcg_eq_post"])
-    pre_taxable = max(0.0, X["ltcg_eq_pre"] - rem)
-    tax_ltcg_eq = 0.125 * post_taxable + 0.10 * pre_taxable
+    tax_stcg_eq = 0.20 * X["stcg_eq"]
+    exemption = min(125000.0, X["ltcg_eq"])
+    ltcg_eq_taxable = max(0.0, X["ltcg_eq"] - exemption)
+    tax_ltcg_eq = 0.125 * ltcg_eq_taxable
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("Tax STCG Eq (pre 23 Jul) @15%", inr(tax_stcg_eq_pre))
-    col2.metric("Tax STCG Eq (post 23 Jul) @20%", inr(tax_stcg_eq_post))
-    col3.metric("Eq LTCG exemption applied", inr(exemption))
-    col4.metric("Tax LTCG Eq (mix)", inr(tax_ltcg_eq))
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Tax STCG Eq (111A) @20%", inr(tax_stcg_eq))
+    col2.metric("Eq LTCG exemption applied (max ₹1,25,000)", inr(exemption))
+    col3.metric("Tax LTCG Eq (112A) @12.5%", inr(tax_ltcg_eq))
 
 # ---------- Step 5: Other Income & Deductions ----------
 if step.startswith("5"):
@@ -213,14 +208,10 @@ def compute_summary(X: Dict[str, float]) -> Dict[str, Any]:
     taxable_interest = max(0.0, (X["nro_savings_interest"] + X["nro_term_interest"]) - tta)
 
     # Capital gains taxes
-    tax_stcg_eq_pre = 0.15 * X["stcg_eq_pre"]
-    tax_stcg_eq_post = 0.20 * X["stcg_eq_post"]
-    total_ltcg_eq = X["ltcg_eq_pre"] + X["ltcg_eq_post"]
-    exemption = min(125000.0, total_ltcg_eq)
-    post_taxable = max(0.0, X["ltcg_eq_post"] - exemption)
-    rem = max(0.0, exemption - X["ltcg_eq_post"])
-    pre_taxable = max(0.0, X["ltcg_eq_pre"] - rem)
-    tax_ltcg_eq = 0.125 * post_taxable + 0.10 * pre_taxable
+    tax_stcg_eq = 0.20 * X["stcg_eq"]
+    exemption = min(125000.0, X["ltcg_eq"])
+    ltcg_eq_taxable = max(0.0, X["ltcg_eq"] - exemption)
+    tax_ltcg_eq = 0.125 * ltcg_eq_taxable
 
     tax_ltcg_20 = 0.20 * X["ltcg_20"]
     tax_ltcg_10 = 0.10 * X["ltcg_10"]
@@ -239,7 +230,7 @@ def compute_summary(X: Dict[str, float]) -> Dict[str, Any]:
     tax_on_slab = old_regime_basic_tax_slab(slab_after_deductions)
 
     # Special rate tax
-    tax_111A = tax_stcg_eq_pre + tax_stcg_eq_post
+    tax_111A = tax_stcg_eq
     tax_112A = tax_ltcg_eq
     tax_112 = tax_ltcg_20 + tax_ltcg_10
 
@@ -248,8 +239,8 @@ def compute_summary(X: Dict[str, float]) -> Dict[str, Any]:
     total_income += max(0.0, income_hp)
     total_income += taxable_interest
     total_income += X["stcg_other_slab"]
-    total_income += X["stcg_eq_pre"] + X["stcg_eq_post"]
-    total_income += total_ltcg_eq
+    total_income += X["stcg_eq"]
+    total_income += X["ltcg_eq"]
     total_income += X["ltcg_20"] + X["ltcg_10"]
     total_income += X["other_slab_income"]
     total_income = max(0.0, total_income - X["other_deductions"])
@@ -282,14 +273,10 @@ def compute_summary(X: Dict[str, float]) -> Dict[str, Any]:
             "taxable_interest_total": taxable_interest,
         },
         "capital_gains_inputs": {
-            "stcg_eq_pre": X["stcg_eq_pre"],
-            "stcg_eq_post": X["stcg_eq_post"],
-            "ltcg_eq_pre": X["ltcg_eq_pre"],
-            "ltcg_eq_post": X["ltcg_eq_post"],
-            "ltcg_eq_total": total_ltcg_eq,
+            "stcg_eq_111A": X["stcg_eq"],
+            "ltcg_eq_112A": X["ltcg_eq"],
             "ltcg_eq_exemption_applied": exemption,
-            "ltcg_eq_post_taxable": post_taxable,
-            "ltcg_eq_pre_taxable": pre_taxable,
+            "ltcg_eq_taxable": ltcg_eq_taxable,
             "stcg_other_slab": X["stcg_other_slab"],
             "ltcg_20": X["ltcg_20"],
             "ltcg_10": X["ltcg_10"],
@@ -397,12 +384,12 @@ if step.startswith("7"):
 
     data = output.getvalue()
     st.download_button(
-        "⬇️ Download Excel (FY 2024-25)",
+        "⬇️ Download Excel (FY 2025-26)",
         data=data,
-        file_name="nri_itr_summary_fy2024_25.xlsx",
+        file_name="nri_itr_summary_fy2025_26.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
 st.sidebar.markdown("---")
-st.sidebar.caption("This tool assumes **Old Regime**, applies 80TTA on NRO savings, equity CG changes from **23-Jul-2024**, and surcharge caps on special-rate gains. Health & Education Cess at 4%.")
-st.sidebar.caption("Always cross-check with your Form 26AS/AIS & ITR utility. For edge cases, consult a CA.")
+st.sidebar.caption("This tool assumes **Old Regime** (Income-tax Act, 1961 — still governs FY 2025-26), applies 80TTA on NRO savings, equity CG at flat 111A/112A rates (20% / 12.5%, ₹1.25L exemption), and surcharge caps on special-rate gains. Health & Education Cess at 4%. Section 87A rebate not applied (NRIs are not eligible).")
+st.sidebar.caption(f"Due dates: 31-Jul-2026 (ITR-1/ITR-2), 31-Aug-2026 (ITR-3/ITR-4, no audit). Always cross-check with your Form 26AS/AIS & ITR utility. For edge cases, consult a CA.")
